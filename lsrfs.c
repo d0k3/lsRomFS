@@ -1,12 +1,8 @@
 #include "romfs.h"
 
 #define OFFSET_HEADER 0x1000
-#define MAX_FILES   8192
-#define MAX_DIRS    8192
 
 static RomFsLv3Header hdr;
-static u32 DirHashTable[MAX_DIRS];
-static u32 FileHashTable[MAX_FILES];
 
 
 // validate header by checking offsets and sizes
@@ -37,7 +33,9 @@ u32 getLv3DirMeta(const char* name, u32 offset_parent, FILE* fp) {
     // hashing, first offset
     u32 mod = (hdr.size_dirhash / 4);
     u32 hash = hashLv3Path(wname, name_len, offset_parent);
-    u32 offset = DirHashTable[hash % mod];
+    u32 offset;
+    fseek(fp, OFFSET_HEADER + hdr.offset_dirhash + ((hash % mod) * 4), SEEK_SET);
+    fread(&offset, 1, 4, fp);
     
     // process the hashbucket (make sure we got the correct data)
     while (offset != (u32) -1) {
@@ -135,27 +133,6 @@ int main( int argc, char** argv ) {
     fseek(fp, 0, SEEK_END);
     if (!validateLv3Header(&hdr) || (OFFSET_HEADER + hdr.offset_filedata > (u32) ftell(fp))) {
         printf("error: header not recognized\n");
-        return 1;
-    }
-    
-    // check hash table sizes 
-    if ((hdr.size_dirhash > MAX_DIRS * sizeof(u32)) ||
-        (hdr.size_filehash > MAX_FILES * sizeof(u32))) {
-        printf("error: max # of files / dirs exceeded\n");
-        return 1;
-    }
-    
-    // load dir hash tables
-    fseek(fp, OFFSET_HEADER + hdr.offset_dirhash, SEEK_SET);
-    if (fread(DirHashTable, 1, hdr.size_dirhash, fp) != hdr.size_dirhash) {
-        printf("error: file too small\n");
-        return 1;
-    }
-    
-    // load file hash tables
-    fseek(fp, OFFSET_HEADER + hdr.offset_filehash, SEEK_SET);
-    if (fread(FileHashTable, 1, hdr.size_filehash, fp) != hdr.size_filehash) {
-        printf("error: file too small\n");
         return 1;
     }
     
