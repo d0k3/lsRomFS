@@ -27,37 +27,44 @@ u32 hashLv3Path(u16* name, u32 name_len, u32 offset_parent) {
     return hash;
 }
 
+u32 getLv3DirMeta(const char* name, u32 offset_parent, FILE* fp) {
+    // wide name
+    u16 wname[256];
+    u32 name_len = strnlen(name, 256);
+    for (name_len = 0; name[name_len]; name_len++)
+        wname[name_len] = name[name_len]; // poor mans UTF-8 -> UTF-16
+    
+    // hashing, first offset
+    u32 mod = (hdr.size_dirhash / 4);
+    u32 hash = hashLv3Path(wname, name_len, offset_parent);
+    u32 offset = DirHashTable[hash % mod];
+    
+    // process the hashbucket (make sure we got the correct data)
+    while (offset != (u32) -1) {
+        RomFsLv3DirMeta meta;
+        fseek(fp, OFFSET_HEADER + hdr.offset_dirmeta + offset, SEEK_SET);
+        if (!fread(&meta, 1, sizeof(RomFsLv3DirMeta), fp))
+            // slim chance of endless loop with broken lvl3 here
+            return (u32) -1; 
+        if ((offset_parent == meta.offset_parent) &&
+            (name_len == meta.name_len / 2) &&
+            (memcmp(wname, meta.wname, name_len * 2) == 0))
+            break;
+        offset = meta.offset_samehash;
+    }
+    
+    return offset;
+}
+
 // search for lvl3 dir
 u32 seekLv3Dir(const char* path, FILE* fp) {
     char lpath[256];
-    u32 offset_parent = 0;
     u32 offset = 0;
     
     if (!*path) return 0; // root dir
     strncpy(lpath, path, 256);
-    for (char* name = strtok(lpath, "/"); name != NULL; name = strtok(NULL, "/")) {
-        // hashing, wide name
-        u16 wname[256];
-        u32 name_len = strnlen(name, 256);
-        for (name_len = 0; name[name_len]; name_len++)
-            wname[name_len] = name[name_len]; // poor mans UTF-8 -> UTF-16
-        offset = DirHashTable[hashLv3Path(wname, name_len, offset_parent) % (hdr.size_dirhash * 4)];
-        // read dirmeta
-        while (true) {
-            RomFsLv3DirMeta dirmeta;
-            fseek(fp, OFFSET_HEADER + hdr.offset_dirmeta + offset, SEEK_SET);
-            if ((!fread(&dirmeta, 1, sizeof(RomFsLv3DirMeta), fp)) ||
-                (offset_parent != dirmeta.offset_parent))
-                return (u32) -1; // slim chance of endless loop with broken lvl3 here
-            printf("%.*ls / %.*ls", name_len, (wchar_t*) wname, name_len, (wchar_t*) dirmeta.wname);
-            if ((name_len == dirmeta.name_len / 2) && (memcmp(wname, dirmeta.wname, name_len * 2) == 0))
-                break;
-            offset = dirmeta.offset_samehash;
-            if (offset == (u32) -1) return (u32) -1;
-        }
-        // one level deeper
-        offset_parent = offset;
-    }
+    for (char* name = strtok(lpath, "/"); (name != NULL) && (offset != (u32) -1); name = strtok(NULL, "/"))
+        offset =  getLv3DirMeta(name, offset, fp);
     
     return offset;
 }
@@ -83,7 +90,7 @@ bool listLv3Dir(const char* path, FILE* fp) {
         fseek(fp, OFFSET_HEADER + hdr.offset_dirmeta + offset, SEEK_SET);
         if (!fread(&dirmeta, 1, sizeof(RomFsLv3DirMeta), fp))
             return false;
-        printf("[%2u] [DIR] %.*ls\n", cnt_dir, dirmeta.name_len / 2, (wchar_t*) dirmeta.wname);
+        printf("[%2u] [%7s] %.*ls\n", cnt_dir, "DIR", dirmeta.name_len / 2, (wchar_t*) dirmeta.wname);
         offset = dirmeta.offset_sibling;
         cnt_dir++;
     }
@@ -93,7 +100,7 @@ bool listLv3Dir(const char* path, FILE* fp) {
         fseek(fp, OFFSET_HEADER + hdr.offset_filemeta + offset, SEEK_SET);
         if (!fread(&filemeta, 1, sizeof(RomFsLv3DirMeta), fp))
             return false;
-        printf("[%2u] [%6u] %.*ls\n", cnt_file, (u32) filemeta.size_data, filemeta.name_len / 2, (wchar_t*) filemeta.wname);
+        printf("[%2u] [%7u] %.*ls\n", cnt_file, (u32) filemeta.size_data, filemeta.name_len / 2, (wchar_t*) filemeta.wname);
         offset = filemeta.offset_sibling;
         cnt_file++;
     }
