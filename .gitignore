@@ -1,0 +1,6 @@
+romfs*.bin
+*.exe
+*.zip
+zzz_corpus
+
+.DS_Store
