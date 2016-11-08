@@ -43,7 +43,7 @@ u32 getLv3DirMeta(const char* name, u32 offset_parent, FILE* fp) {
     while (offset != (u32) -1) {
         RomFsLv3DirMeta meta;
         fseek(fp, OFFSET_HEADER + hdr.offset_dirmeta + offset, SEEK_SET);
-        if (!fread(&meta, 1, sizeof(RomFsLv3DirMeta), fp))
+        if ((offset > hdr.size_dirmeta) || !fread(&meta, 1, sizeof(RomFsLv3DirMeta), fp))
             // slim chance of endless loop with broken lvl3 here
             return (u32) -1; 
         if ((offset_parent == meta.offset_parent) &&
@@ -132,7 +132,8 @@ int main( int argc, char** argv ) {
     }
     
     // validate header
-    if (!validateLv3Header(&hdr)) {
+    fseek(fp, 0, SEEK_END);
+    if (!validateLv3Header(&hdr) || (OFFSET_HEADER + hdr.offset_filedata > (u32) ftell(fp))) {
         printf("error: header not recognized\n");
         return 1;
     }
