@@ -1,6 +1,7 @@
 #include "romfs.h"
 
 #define OFFSET_HEADER 0x1000
+#define BUFFER_SIZE 0x100000
 
 static RomFsLv3Header hdr;
 
@@ -54,6 +55,37 @@ u32 getLv3DirMeta(const char* name, u32 offset_parent, FILE* fp) {
     return offset;
 }
 
+u32 getLv3FileMeta(const char* name, u32 offset_parent, FILE* fp) {
+    // wide name
+    u16 wname[256];
+    u32 name_len = strnlen(name, 256);
+    for (name_len = 0; name[name_len]; name_len++)
+        wname[name_len] = name[name_len]; // poor mans UTF-8 -> UTF-16
+    
+    // hashing, first offset
+    u32 mod = (hdr.size_filehash / 4);
+    u32 hash = hashLv3Path(wname, name_len, offset_parent);
+    u32 offset;
+    fseek(fp, OFFSET_HEADER + hdr.offset_filehash + ((hash % mod) * 4), SEEK_SET);
+    fread(&offset, 1, 4, fp);
+    
+    // process the hashbucket (make sure we got the correct data)
+    while (offset != (u32) -1) {
+        RomFsLv3FileMeta meta;
+        fseek(fp, OFFSET_HEADER + hdr.offset_filemeta + offset, SEEK_SET);
+        if ((offset > hdr.size_filemeta) || !fread(&meta, 1, sizeof(RomFsLv3FileMeta), fp))
+            // slim chance of endless loop with broken lvl3 here
+            return (u32) -1; 
+        if ((offset_parent == meta.offset_parent) &&
+            (name_len == meta.name_len / 2) &&
+            (memcmp(wname, meta.wname, name_len * 2) == 0))
+            break;
+        offset = meta.offset_samehash;
+    }
+    
+    return offset;
+}
+
 // search for lvl3 dir
 u32 seekLv3Dir(const char* path, FILE* fp) {
     char lpath[256];
@@ -62,7 +94,26 @@ u32 seekLv3Dir(const char* path, FILE* fp) {
     if (!*path) return 0; // root dir
     strncpy(lpath, path, 256);
     for (char* name = strtok(lpath, "/"); (name != NULL) && (offset != (u32) -1); name = strtok(NULL, "/"))
-        offset =  getLv3DirMeta(name, offset, fp);
+        offset = getLv3DirMeta(name, offset, fp);
+    
+    return offset;
+}
+
+// search for lvl3 file
+u32 seekLv3File(const char* path, FILE* fp) {
+    char lpath[256];
+    char* lfilename;
+    u32 offset = 0;
+    
+    if (!*path) return 0; // root dir
+    strncpy(lpath, path, 256);
+    lfilename = strrchr(lpath, '/');
+    if (lfilename) {
+        *(lfilename++) = '\0';
+        for (char* name = strtok(lpath, "/"); (name != NULL) && (offset != (u32) -1); name = strtok(NULL, "/"))
+            offset = getLv3DirMeta(name, offset, fp);
+        if (offset != (u32) -1) offset = getLv3FileMeta(lfilename, offset, fp);
+    } else offset = getLv3FileMeta(lpath, offset, fp);
     
     return offset;
 }
@@ -105,7 +156,43 @@ bool listLv3Dir(const char* path, FILE* fp) {
     
     printf("\nTOTAL: %u dirs, %u files\n", cnt_dir, cnt_file); 
     return true;
-}    
+}
+
+bool dumpLv3File(const char* path, FILE* fp) {
+    u8 buffer[BUFFER_SIZE];
+    FILE* fp_out;
+    char filename[256];
+    u32 offset = seekLv3File(path, fp);
+    RomFsLv3FileMeta filemeta;
+    
+    // safety check
+    if (offset == (u32) -1) return false;
+    
+    printf("\nPATH: %s\n", path);
+    
+    // get filemeta
+    fseek(fp, OFFSET_HEADER + hdr.offset_filemeta + offset, SEEK_SET);
+    if (!fread(&filemeta, 1, sizeof(RomFsLv3FileMeta), fp))
+        return false;
+    
+    // build filename / open output file
+    snprintf(filename, 256, "%.*ls", filemeta.name_len / 2, (wchar_t*) filemeta.wname);
+    fseek(fp, OFFSET_HEADER + hdr.offset_filedata + filemeta.offset_data, SEEK_SET);
+    fp_out = fopen(filename, "wb");
+    if (!fp_out) return false;
+    
+    // dump file
+    for (u32 pos = 0; pos < filemeta.size_data; pos += BUFFER_SIZE) {
+        u32 read_bytes = min(BUFFER_SIZE, (filemeta.size_data - pos));
+        printf("DUMPING: %s (%u/%u)\r", filename, pos, (u32) filemeta.size_data);
+        fread(buffer, 1, read_bytes, fp);
+        fwrite(buffer, 1, read_bytes, fp_out);
+    }
+    printf("DUMPING: %s (%u/%u)\n", filename, (u32) filemeta.size_data, (u32) filemeta.size_data);
+    
+    fclose(fp_out);
+    return true;
+}
 
 int main( int argc, char** argv ) {
     FILE* fp;
@@ -136,9 +223,9 @@ int main( int argc, char** argv ) {
         return 1;
     }
     
-    // list dir
-    if (!listLv3Dir(path, fp)) {
-        printf("error: failed listing files\n");
+    // list dir or dump file
+    if (!listLv3Dir(path, fp) && !dumpLv3File(path, fp)) {
+        printf("error: dir or file not found\n");
         return 1;
     }
     
